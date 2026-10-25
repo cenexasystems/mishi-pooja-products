@@ -1,0 +1,882 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import toast from 'react-hot-toast';
+import { User, FileText, Trash2, CheckCircle2, ChevronDown, Search, Banknote, CreditCard, Smartphone, Split as SplitIcon, Receipt, Save } from 'lucide-react';
+import { useAdmin } from '../AdminContext';
+import { fetchProducts, fetchCoupons, fetchDeliveryRegions, calculateDeliveryFee, Product, Coupon, Order, generateBillingInvoiceId, DeliveryRegion } from '@/lib/db';
+
+export default function POSBillingPanel() {
+  const { addOrder } = useAdmin();
+  const [orderType, setOrderType] = useState<'OFFLINE' | 'ONLINE'>('OFFLINE');
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
+  
+  const [products, setProducts] = useState<Product[]>([]);
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [deliveryRegions, setDeliveryRegions] = useState<DeliveryRegion[]>([]);
+  const [selectedRegionId, setSelectedRegionId] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+  
+  // Billing items: { productId, name, size, qty, price }
+  const [items, setItems] = useState<Array<{ productId: string; name: string; size: string; qty: number; price: number }>>([]);
+  const [selectedCouponCode, setSelectedCouponCode] = useState('No Coupon');
+  const [manualDiscount, setManualDiscount] = useState(0);
+  const [discountType, setDiscountType] = useState<'AMOUNT' | 'PERCENTAGE'>('AMOUNT');
+  const [delivery, setDelivery] = useState(0);
+  const [amountReceived, setAmountReceived] = useState('');
+
+  // GST / Payment
+  const [isGst, setIsGst] = useState(false);
+  const [gstPercent, setGstPercent] = useState<number>(18);
+  type PayMethod = 'CASH' | 'CARD' | 'GPAY' | 'SPLIT';
+  const [paymentMethod, setPaymentMethod] = useState<PayMethod>('CASH');
+  const [splitCash, setSplitCash] = useState<string>('');
+  const [splitGpay, setSplitGpay] = useState<string>('');
+  const [splitCard, setSplitCard] = useState<string>('');
+
+  // Catalog selection states
+  const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false);
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogQuantities, setCatalogQuantities] = useState<Record<string, number>>({});
+
+  // Guard against double-clicks firing duplicate orders / WhatsApp sends
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const getCatalogQty = (id: string, size: string) => catalogQuantities[`${id}-${size}`] || 1;
+  const updateCatalogQty = (id: string, size: string, delta: number) => {
+    const key = `${id}-${size}`;
+    setCatalogQuantities(prev => ({ ...prev, [key]: Math.max(1, (prev[key] || 1) + delta) }));
+  };
+
+  useEffect(() => {
+    const loadCatalogData = async () => {
+      try {
+        setLoading(true);
+        const [fetchedProducts, fetchedCoupons, fetchedRegions] = await Promise.all([
+          fetchProducts(),
+          fetchCoupons(),
+          fetchDeliveryRegions(true)
+        ]);
+        setProducts(fetchedProducts);
+        setCoupons(fetchedCoupons.filter(c => c.status === 'ACTIVE'));
+        setDeliveryRegions(fetchedRegions);
+      } catch (err) {
+        console.error('Error fetching billing panel catalog data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadCatalogData();
+  }, []);
+
+  const calculateCartWeight = () => {
+    return items.reduce((acc, item) => {
+      const product = products.find(p => p.id === item.productId);
+      let weight = 0;
+      if (product && product.sizes) {
+        const sizeOpt = product.sizes.find(s => s.size === item.size);
+        if (sizeOpt && sizeOpt.weightGrams) {
+          weight = sizeOpt.weightGrams;
+        }
+      }
+      if (!weight && item.size) {
+        const lower = item.size.toLowerCase();
+        if (lower.includes('kg')) {
+          const num = parseFloat(lower.replace(/[^0-9.]/g, ''));
+          if (num) weight = Math.round(num * 1000);
+        } else if (lower.includes('g') || lower.includes('gm')) {
+          const num = parseFloat(lower.replace(/[^0-9.]/g, ''));
+          if (num) weight = Math.round(num);
+        }
+      }
+      if (!weight) {
+        weight = 250; // Fallback default 250g per unit
+      }
+      return acc + (weight * item.qty);
+    }, 0);
+  };
+
+  useEffect(() => {
+    if (!selectedRegionId) return;
+    const region = deliveryRegions.find(r => r.id === selectedRegionId);
+    if (region) {
+      const weight = calculateCartWeight();
+      const fee = calculateDeliveryFee(weight, region);
+      setDelivery(fee);
+    }
+  }, [selectedRegionId, items, deliveryRegions]);
+
+  const filteredProducts = products.filter(p => 
+    p.name.toLowerCase().includes(catalogSearch.toLowerCase()) && p.isAvailable !== false
+  );
+
+
+
+  const addCustomItem = () => {
+    setItems([...items, { 
+      productId: `custom-${Date.now()}`, 
+      name: 'Custom Product', 
+      size: 'Standard', 
+      qty: 1, 
+      price: 0 
+    }]);
+  };
+
+  const updateItem = (productId: string, size: string, field: string, value: string | number) => {
+    setItems(items.map(item => 
+      item.productId === productId && item.size === size ? { ...item, [field]: value } : item
+    ));
+  };
+
+  const removeItem = (productId: string, size: string) => {
+    setItems(items.filter(item => !(item.productId === productId && item.size === size)));
+  };
+
+  const subtotal = items.reduce((acc, item) => acc + (item.price * item.qty), 0);
+  
+  // Calculate Coupon discount dynamically
+  const couponDiscount = (() => {
+    if (selectedCouponCode === 'No Coupon') return 0;
+    const matched = coupons.find(c => c.code === selectedCouponCode);
+    if (!matched) return 0;
+    if (subtotal < matched.minOrder) return 0;
+    return Math.round((subtotal * matched.discount) / 100);
+  })();
+
+  const calculatedManualDiscount = discountType === 'PERCENTAGE'
+    ? Math.round((subtotal * manualDiscount) / 100)
+    : manualDiscount;
+
+  const taxableAmount = Math.max(0, subtotal - couponDiscount - calculatedManualDiscount);
+  const gstAmount = isGst ? Math.round((taxableAmount * gstPercent) / 100) : 0;
+  const grandTotal = Math.max(0, taxableAmount + gstAmount + delivery);
+
+  const splitTotal = (Number(splitCash) || 0) + (Number(splitGpay) || 0) + (Number(splitCard) || 0);
+  const splitRemaining = Math.max(0, grandTotal - splitTotal);
+
+  const handleSendBill = async () => {
+    if (isSubmitting) return;
+
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    if (cleanPhone.length !== 10) {
+      toast.error("Please enter a valid 10-digit mobile number.");
+      return;
+    }
+    if (!customerName.trim() || items.length === 0) {
+      toast.error("Please enter customer name and at least one item.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    const received = Number(amountReceived) || 0;
+    const change = Math.max(0, received - grandTotal);
+
+    // Payment breakdown summary for the receipt / WhatsApp message
+    let paymentSummary = '';
+    if (paymentMethod === 'CASH') paymentSummary = `Cash: ₹${grandTotal.toLocaleString('en-IN')}`;
+    else if (paymentMethod === 'CARD') paymentSummary = `Card: ₹${grandTotal.toLocaleString('en-IN')}`;
+    else if (paymentMethod === 'GPAY') paymentSummary = `GPay/UPI: ₹${grandTotal.toLocaleString('en-IN')}`;
+    else {
+      const parts: string[] = [];
+      if (Number(splitCash) > 0) parts.push(`Cash ₹${Number(splitCash).toLocaleString('en-IN')}`);
+      if (Number(splitGpay) > 0) parts.push(`GPay ₹${Number(splitGpay).toLocaleString('en-IN')}`);
+      if (Number(splitCard) > 0) parts.push(`Card ₹${Number(splitCard).toLocaleString('en-IN')}`);
+      paymentSummary = `Split: ${parts.join(' + ') || '—'}`;
+    }
+
+    const orderId = await generateBillingInvoiceId();
+
+    // Generate Supabase compatible Order object
+    const newOrder: Order = {
+      id: orderId,
+      createdAt: new Date().toISOString(),
+      customerName: customerName,
+      customerPhone: cleanPhone,
+      customerAddress: customerAddress || (orderType === 'OFFLINE' ? 'Walk-in' : ''),
+      source: orderType,
+      status: 'Completed',
+      subtotal,
+      totalPrice: grandTotal,
+      couponCode: selectedCouponCode !== 'No Coupon' ? selectedCouponCode : undefined,
+      couponDiscount,
+      manualDiscount: calculatedManualDiscount,
+      deliveryCharge: delivery,
+      cashReceived: received,
+      changeReturned: change,
+      items: items.map(i => ({
+        productId: i.productId,
+        name: i.name,
+        size: i.size,
+        quantity: i.qty,
+        price: i.price
+      }))
+    };
+
+    try {
+      // 1. Write order to Supabase
+      await addOrder(newOrder);
+
+      // 2. Format WhatsApp Message
+      let message = `Mishi Pooja Products- Purchase Successful!%0A%0A`;
+      message += `Hi ${customerName},%0A`;
+      message += `Thank you for shopping with us!%0A%0A`;
+      message += `Bill Total: ₹${grandTotal.toLocaleString('en-IN')}%0A`;
+      if (isGst) message += `GST (${gstPercent}%25): ₹${gstAmount.toLocaleString('en-IN')}%0A`;
+      message += `Payment: ${paymentSummary}%0A%0A`;
+      message += `View, download or print your official invoice here:%0A${window.location.origin}/invoice/${orderId}%0A%0A`;
+      message += `Have a great day!`;
+
+      // 3. Open WhatsApp Web
+      window.open(`https://api.whatsapp.com/send/?phone=91${cleanPhone}&text=${message}`, '_blank');
+
+      // 4. Reset checkout form
+      setCustomerName('');
+      setCustomerPhone('');
+      setCustomerAddress('');
+      setItems([]);
+      setSelectedCouponCode('No Coupon');
+      setManualDiscount(0);
+      setDiscountType('AMOUNT');
+      setDelivery(0);
+      setAmountReceived('');
+      setIsGst(false);
+      setGstPercent(18);
+      setPaymentMethod('CASH');
+      setSplitCash('');
+      setSplitGpay('');
+      setSplitCard('');
+      toast.success("Invoice processed and saved successfully!");
+    } catch (err) {
+      console.error(err);
+      toast.error("Error saving order. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4 sm:space-y-6 w-full max-w-[1600px] mx-auto font-sans text-slate-800">
+      
+      {/* Header Section */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4 border-b border-slate-200 pb-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="w-1.5 h-6 bg-[#2C392A] rounded-full hidden sm:block"></div>
+          <h1 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">POS Billing Panel</h1>
+          <span className="text-slate-300 hidden sm:inline">|</span>
+          <p className="text-xs font-medium text-slate-500 w-full sm:w-auto">Quick invoice generator & database synced checkout</p>
+        </div>
+        
+        <div className="flex items-center gap-1.5 sm:gap-2 bg-white rounded-full border border-slate-200 p-1 shadow-sm w-full sm:w-auto justify-center">
+          <button 
+            onClick={() => setOrderType('OFFLINE')}
+            className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${orderType === 'OFFLINE' ? 'bg-slate-50 border border-slate-200 shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-800'}`}
+          >
+            <span className={`w-2 h-2 rounded-full shrink-0 ${orderType === 'OFFLINE' ? 'bg-amber-500' : 'bg-slate-300'}`}></span>
+            OFFLINE (POS)
+          </button>
+          <button 
+            onClick={() => setOrderType('ONLINE')}
+            className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${orderType === 'ONLINE' ? 'bg-slate-50 border border-slate-200 shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-800'}`}
+          >
+            <span className={`w-2 h-2 rounded-full shrink-0 ${orderType === 'ONLINE' ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+            ONLINE ORDER
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+        
+        {/* Left Column (Inputs) */}
+        <div className="lg:col-span-2 space-y-4 sm:space-y-6">
+          
+          {/* Customer Details */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6">
+            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800 mb-4 sm:mb-6">
+              <User size={18} className="text-[#2C392A]" /> Customer Details
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Customer Name</label>
+                <input 
+                  type="text" 
+                  placeholder="Enter name"
+                  value={customerName}
+                  onChange={e => setCustomerName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-100 rounded-xl px-3.5 sm:px-4 py-2.5 sm:py-3 text-sm focus:outline-none focus:border-slate-300 transition-colors placeholder:text-slate-400 font-bold text-slate-900"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Mobile Number (WhatsApp)</label>
+                <div className="flex bg-slate-50 border border-slate-100 rounded-xl overflow-hidden focus-within:border-slate-300 transition-colors">
+                  <div className="pl-3 sm:pl-4 pr-2 sm:pr-3 flex items-center border-r border-slate-100 bg-slate-100 shrink-0">
+                    <span className="text-sm font-bold text-slate-500">+91</span>
+                  </div>
+                  <input 
+                    type="tel"
+                    maxLength={10}
+                    placeholder="Enter 10-digit number"
+                    value={customerPhone}
+                    onChange={e => setCustomerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    className="w-full min-w-0 bg-transparent px-3 sm:px-4 py-2.5 sm:py-3 text-sm focus:outline-none placeholder:text-slate-400 font-bold text-slate-900"
+                  />
+                </div>
+              </div>
+              {orderType === 'ONLINE' && (
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Delivery Address</label>
+                  <textarea 
+                    placeholder="Enter full shipping/delivery address"
+                    value={customerAddress}
+                    onChange={e => setCustomerAddress(e.target.value)}
+                    rows={2}
+                    className="w-full bg-slate-50 border border-slate-100 rounded-xl px-3.5 sm:px-4 py-2.5 sm:py-3 text-sm focus:outline-none focus:border-slate-300 transition-colors placeholder:text-slate-400 font-bold text-slate-900 resize-none"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Order Items */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4 mb-4 sm:mb-6">
+              <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                <FileText size={18} className="text-[#2C392A]" /> Order Items
+              </h2>
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                <button 
+                  onClick={() => setIsCatalogModalOpen(true)}
+                  className="flex-1 sm:flex-none px-3.5 sm:px-4 py-2 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-100 rounded-full transition-colors cursor-pointer flex items-center justify-center gap-1"
+                >
+                  <Search size={14} /> Catalog
+                </button>
+                <button 
+                  onClick={addCustomItem}
+                  className="flex-1 sm:flex-none px-3.5 sm:px-4 py-2 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-100 rounded-full transition-colors cursor-pointer text-center"
+                >
+                  + Custom Item
+                </button>
+                <button 
+                  onClick={() => setItems([])}
+                  className="flex-1 sm:flex-none px-3.5 sm:px-4 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full transition-colors cursor-pointer text-center"
+                >
+                  Clear Order
+                </button>
+              </div>
+            </div>
+
+            {items.length === 0 ? (
+              <div className="text-center py-8 sm:py-12 text-sm text-slate-500 italic">
+                No items added to this bill. Add custom items or select from catalog.
+              </div>
+            ) : (
+              <div className="space-y-3 sm:space-y-4">
+                {/* Desktop/Tablet Header */}
+                <div className="hidden sm:grid grid-cols-12 gap-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest px-2">
+                  <div className="col-span-5">Item Name / Description</div>
+                  <div className="col-span-3 text-center">Price (₹)</div>
+                  <div className="col-span-4 text-center">Qty & Options</div>
+                </div>
+
+                {/* Items List */}
+                {items.map((item) => (
+                  <div key={`${item.productId}-${item.size}`} className="bg-slate-50 border border-slate-100 p-3 sm:p-2 rounded-xl space-y-3 sm:space-y-0 sm:grid sm:grid-cols-12 sm:gap-3 sm:items-center">
+                    
+                    {/* Item Name / Title */}
+                    <div className="sm:col-span-5 flex items-center justify-between sm:justify-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        {item.productId.startsWith('custom-') ? (
+                          <input 
+                            type="text"
+                            placeholder="Type custom product description..."
+                            value={item.name}
+                            onChange={e => updateItem(item.productId, item.size, 'name', e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 sm:py-2 text-xs sm:text-sm focus:outline-none focus:border-slate-300 text-slate-900 font-bold"
+                          />
+                        ) : (
+                          <div className="px-1 sm:px-3 py-0.5 sm:py-2">
+                            <p className="text-xs sm:text-sm font-bold text-slate-900 leading-snug">{item.name}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">Size: {item.size}</p>
+                          </div>
+                        )}
+                      </div>
+                      {/* Trash button on mobile (top right of item card) */}
+                      <button 
+                        onClick={() => removeItem(item.productId, item.size)} 
+                        className="sm:hidden p-2 text-red-400 hover:text-red-600 bg-red-50 rounded-lg cursor-pointer shrink-0"
+                        title="Remove item"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+
+                    {/* Price and Controls wrapper for mobile / col-spans for desktop */}
+                    <div className="flex items-center justify-between sm:contents gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+                      
+                      {/* Price Input */}
+                      <div className="sm:col-span-3 flex items-center gap-1 sm:justify-center">
+                        <span className="sm:hidden text-xs font-bold text-slate-400">Price:</span>
+                        <div className="relative flex items-center">
+                          <span className="absolute left-2.5 text-xs font-bold text-slate-400 sm:hidden">₹</span>
+                          <input 
+                            type="number"
+                            value={item.price || ''}
+                            disabled={!item.productId.startsWith('custom-')}
+                            onChange={e => updateItem(item.productId, item.size, 'price', Number(e.target.value))}
+                            className="w-20 sm:w-24 text-center bg-white border border-slate-200 rounded-lg pl-5 pr-2 sm:px-3 py-1.5 sm:py-2 text-xs sm:text-sm font-black text-slate-900 focus:outline-none focus:border-slate-300 disabled:opacity-80"
+                            placeholder="0"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Quantity Stepper & Trash button (Desktop) */}
+                      <div className="sm:col-span-4 flex justify-end sm:justify-center items-center gap-2 sm:gap-3">
+                        <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden h-8 sm:h-9">
+                          <button 
+                            onClick={() => updateItem(item.productId, item.size, 'qty', Math.max(1, item.qty - 1))}
+                            className="px-2.5 sm:px-3 text-red-500 font-bold hover:bg-slate-50 cursor-pointer text-xs sm:text-sm"
+                          >-</button>
+                          <span className="text-xs sm:text-sm font-bold text-slate-800 w-6 text-center">{item.qty}</span>
+                          <button 
+                            onClick={() => updateItem(item.productId, item.size, 'qty', item.qty + 1)}
+                            className="px-2.5 sm:px-3 text-red-500 font-bold hover:bg-slate-50 cursor-pointer text-xs sm:text-sm"
+                          >+</button>
+                        </div>
+                        <button 
+                          onClick={() => removeItem(item.productId, item.size)} 
+                          className="hidden sm:flex p-2 text-red-400 hover:text-red-600 bg-red-50 rounded-lg cursor-pointer shrink-0"
+                          title="Remove item"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Right Column (Summary & Payment) */}
+        <div className="space-y-4 sm:space-y-6">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 sm:p-6">
+            
+            {/* Source Card */}
+            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5 sm:p-4 mb-4 sm:mb-6">
+              <div className="flex justify-between items-center mb-3 text-xs">
+                <span className="font-bold text-slate-500 uppercase tracking-widest">Source</span>
+                <span className={`font-black uppercase ${orderType === 'OFFLINE' ? 'text-amber-600' : 'text-emerald-600'}`}>{orderType}</span>
+              </div>
+              <div className="space-y-2 text-xs sm:text-sm">
+                <div className="flex justify-between border-b border-slate-200 pb-2">
+                  <span className="text-slate-500">Customer</span>
+                  <span className="font-bold text-slate-800 truncate max-w-[150px]">{customerName || '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Phone</span>
+                  <span className="font-bold text-slate-800 truncate max-w-[150px]">{customerPhone || '-'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Calculations */}
+            <div className="space-y-4 sm:space-y-5">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Apply Coupon</label>
+                <div className="relative">
+                  <select 
+                    value={selectedCouponCode}
+                    onChange={e => setSelectedCouponCode(e.target.value)}
+                    className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl px-3.5 sm:px-4 py-2.5 text-xs sm:text-sm font-bold text-slate-900 focus:outline-none cursor-pointer"
+                  >
+                    <option>No Coupon</option>
+                    {coupons.map(c => {
+                      const isExhausted = c.usageLimit > 0 && c.usedCount >= c.usageLimit;
+                      return (
+                        <option key={c.code} value={c.code} disabled={subtotal < c.minOrder || isExhausted}>
+                          {c.code} ({c.discount}% off, Min ₹{c.minOrder}) {isExhausted ? '(Limit Reached)' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Manual Discount</label>
+                <div className="flex border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
+                  <select 
+                    value={discountType}
+                    onChange={(e: any) => setDiscountType(e.target.value)}
+                    className="px-3 py-2.5 border-r border-slate-200 bg-white text-xs sm:text-sm font-bold text-slate-600 focus:outline-none cursor-pointer appearance-none text-center min-w-[40px]"
+                  >
+                    <option value="AMOUNT">₹</option>
+                    <option value="PERCENTAGE">%</option>
+                  </select>
+                  <input 
+                    type="number" 
+                    value={manualDiscount || ''}
+                    onChange={e => setManualDiscount(Number(e.target.value))}
+                    className="w-full bg-transparent px-3 py-2.5 text-xs sm:text-sm focus:outline-none font-bold text-slate-900"
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-between items-center text-xs sm:text-sm border-t border-slate-100 pt-4 sm:pt-5 font-medium">
+                <span className="text-slate-500">Subtotal ({items.length} items)</span>
+                <span className="font-bold">₹{subtotal.toLocaleString('en-IN')}</span>
+              </div>
+
+              {couponDiscount > 0 && (
+                <div className="flex justify-between items-center text-xs sm:text-sm font-bold text-red-600">
+                  <span>Coupon Discount</span>
+                  <span>-₹{couponDiscount.toLocaleString('en-IN')}</span>
+                </div>
+              )}
+
+              {deliveryRegions.length > 0 && (
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Delivery Region (Auto-Fee)</label>
+                  <div className="relative">
+                    <select 
+                      value={selectedRegionId}
+                      onChange={e => setSelectedRegionId(e.target.value)}
+                      className="w-full appearance-none bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
+                    >
+                      <option value="">Select Region (Optional)</option>
+                      {deliveryRegions.map(r => (
+                        <option key={r.id} value={r.id}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-between items-center text-xs sm:text-sm border-b border-slate-100 pb-4 sm:pb-5 font-medium">
+                <span className="text-slate-500 flex items-center gap-1">
+                  Delivery Charge
+                  {calculateCartWeight() > 0 && (
+                    <span className="text-[10px] text-slate-400 font-normal">
+                      ({(calculateCartWeight() / 1000).toFixed(2)} kg)
+                    </span>
+                  )}
+                </span>
+                <input 
+                  type="number" 
+                  value={delivery || ''}
+                  onChange={e => setDelivery(Number(e.target.value))}
+                  className="w-20 text-right bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 focus:outline-none font-bold text-slate-900 text-xs sm:text-sm"
+                  placeholder="0"
+                />
+              </div>
+
+              {/* GST / Non-GST Toggle */}
+              <div className="pt-2">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Invoice Type</label>
+                <div className="flex bg-slate-100 rounded-full p-1 border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setIsGst(false)}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold transition-all cursor-pointer ${!isGst ? 'bg-white text-slate-900 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    <Receipt size={14} /> NON-GST BILL
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsGst(true)}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold transition-all cursor-pointer ${isGst ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    <Receipt size={14} /> GST INVOICE
+                  </button>
+                </div>
+              </div>
+
+              {isGst && (
+                <div className="flex justify-between items-center text-xs sm:text-sm font-bold text-slate-700 bg-amber-50/60 border border-amber-100 rounded-lg px-3 py-2">
+                  <span className="flex items-center gap-2">
+                    GST <span className="text-[10px] text-amber-700 font-black">(ADDED)</span>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={gstPercent}
+                      onChange={e => setGstPercent(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                      className="w-14 text-center bg-white border border-amber-200 rounded-md px-1.5 py-1 text-xs font-black text-slate-900 focus:outline-none"
+                    />
+                    <span className="text-slate-500">%</span>
+                    <span className="text-slate-900 font-black min-w-[70px] text-right">₹{gstAmount.toLocaleString('en-IN')}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Grand Total — flex-safe alignment so the amount never clips */}
+              <div className="flex justify-between items-center gap-3 pt-3 border-t border-slate-200">
+                <span className="text-xs sm:text-sm font-black uppercase tracking-widest text-slate-800 shrink-0">Grand Total</span>
+                <span className="text-xl sm:text-2xl font-black text-slate-900 tabular-nums leading-none text-right">
+                  ₹{grandTotal.toLocaleString('en-IN')}
+                </span>
+              </div>
+            </div>
+
+            {/* Payment Method */}
+            <div className="mt-5 sm:mt-6">
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Payment Method</label>
+              <div className="grid grid-cols-4 gap-1.5 bg-slate-100 border border-slate-200 rounded-xl p-1">
+                {([
+                  { key: 'CASH',  label: 'CASH',  Icon: Banknote   },
+                  { key: 'CARD',  label: 'CARD',  Icon: CreditCard },
+                  { key: 'GPAY',  label: 'GPAY',  Icon: Smartphone },
+                  { key: 'SPLIT', label: 'SPLIT', Icon: SplitIcon  },
+                ] as const).map(({ key, label, Icon }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setPaymentMethod(key)}
+                    className={`flex items-center justify-center gap-1 px-2 py-2 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all cursor-pointer ${paymentMethod === key ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 hover:bg-white'}`}
+                  >
+                    <Icon size={13} /> <span className="hidden xs:inline sm:inline">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Payment Details per method */}
+            {paymentMethod === 'CASH' && (
+              <div className="mt-3 bg-slate-50 border border-slate-100 rounded-xl p-3.5 sm:p-4">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Cash Received (₹)</label>
+                <input
+                  type="number"
+                  value={amountReceived}
+                  onChange={e => setAmountReceived(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-slate-300 font-bold text-slate-900"
+                  placeholder="Enter cash received"
+                />
+                {amountReceived && Number(amountReceived) >= grandTotal && (
+                  <div className="mt-3 flex justify-between items-center text-xs font-bold text-emerald-600">
+                    <span>Change to return:</span>
+                    <span className="tabular-nums">₹{(Number(amountReceived) - grandTotal).toLocaleString('en-IN')}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {paymentMethod === 'CARD' && (
+              <div className="mt-3 bg-slate-50 border border-slate-100 rounded-xl p-3.5 sm:p-4 text-xs font-bold text-slate-600 flex justify-between items-center">
+                <span>Card Charged</span>
+                <span className="text-slate-900 font-black tabular-nums">₹{grandTotal.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+
+            {paymentMethod === 'GPAY' && (
+              <div className="mt-3 bg-slate-50 border border-slate-100 rounded-xl p-3.5 sm:p-4 text-xs font-bold text-slate-600 flex justify-between items-center">
+                <span>GPay / UPI</span>
+                <span className="text-slate-900 font-black tabular-nums">₹{grandTotal.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+
+            {paymentMethod === 'SPLIT' && (
+              <div className="mt-3 bg-slate-50 border border-slate-100 rounded-xl p-3.5 sm:p-4 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Cash Portion</label>
+                    <input
+                      type="number"
+                      value={splitCash}
+                      onChange={e => setSplitCash(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-300 font-bold text-slate-900"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">GPay Portion</label>
+                    <input
+                      type="number"
+                      value={splitGpay}
+                      onChange={e => setSplitGpay(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-300 font-bold text-slate-900"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Card Portion</label>
+                    <input
+                      type="number"
+                      value={splitCard}
+                      onChange={e => setSplitCard(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-300 font-bold text-slate-900"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-between items-center text-xs font-bold border-t border-slate-200 pt-2.5">
+                  <span className="text-slate-500">Entered</span>
+                  <span className="text-slate-900 tabular-nums">₹{splitTotal.toLocaleString('en-IN')} / ₹{grandTotal.toLocaleString('en-IN')}</span>
+                </div>
+                {splitRemaining > 0 ? (
+                  <div className="flex justify-between items-center text-xs font-bold text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+                    <span>Remaining to collect</span>
+                    <span className="tabular-nums">₹{splitRemaining.toLocaleString('en-IN')}</span>
+                  </div>
+                ) : (
+                  <div className="flex justify-between items-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">
+                    <span>Split matches total</span>
+                    <CheckCircle2 size={14} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <button
+              onClick={handleSendBill}
+              disabled={isSubmitting}
+              className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-600/60 disabled:cursor-not-allowed text-white font-bold py-3 sm:py-3.5 rounded-xl transition-colors flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-widest shadow-md hover:shadow-lg cursor-pointer"
+            >
+              <CheckCircle2 size={18} />
+              {isSubmitting ? 'Processing…' : 'Complete Sale & WhatsApp'}
+            </button>
+
+            <button
+              onClick={handleSendBill}
+              disabled={isSubmitting}
+              className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed text-slate-700 font-bold rounded-xl text-xs uppercase tracking-widest cursor-pointer"
+            >
+              <Save size={14} /> Save Only
+            </button>
+
+          </div>
+        </div>
+      </div>
+      {/* Catalog Modal */}
+      {isCatalogModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl sm:rounded-[2rem] shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="p-4 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h2 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
+                <Search className="text-[#2C392A]" size={20} /> Product Catalog
+              </h2>
+              <button 
+                onClick={() => setIsCatalogModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 hover:bg-slate-300 flex items-center justify-center font-bold cursor-pointer transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="p-4 sm:p-6 border-b border-slate-100">
+              <div className="relative">
+                <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search products..."
+                  value={catalogSearch}
+                  onChange={e => setCatalogSearch(e.target.value)}
+                  className="w-full pl-11 sm:pl-12 pr-4 py-2.5 sm:py-3 border-2 border-slate-200 rounded-xl text-xs sm:text-sm font-bold text-slate-900 focus:outline-none focus:border-[#2C392A] transition-colors"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-50/50">
+              {filteredProducts.length === 0 ? (
+                <div className="text-center py-12 text-slate-500 italic text-sm">No products found.</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                  {filteredProducts.map(p => (
+                    <div key={p.id} className="bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-sm hover:border-[#2C392A] transition-colors flex flex-col justify-between">
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-xs sm:text-sm mb-1">{p.name}</h3>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-0.5 rounded">{p.category}</span>
+                      </div>
+                      
+                      <div className="mt-3 sm:mt-4 space-y-2.5">
+                        {p.sizes && p.sizes.length > 0 ? (
+                          p.sizes.map(s => (
+                            <div key={s.size} className="flex flex-wrap sm:flex-nowrap justify-between items-center gap-2 text-xs border-b sm:border-b-0 border-slate-100 pb-2 sm:pb-0">
+                              <span className="font-medium text-slate-600 truncate max-w-[130px] sm:max-w-none">{s.size} - ₹{s.price}</span>
+                              <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden h-7 bg-white">
+                                  <button onClick={() => updateCatalogQty(p.id, s.size, -1)} className="px-2 text-slate-500 hover:bg-slate-50 hover:text-red-500 font-bold cursor-pointer">-</button>
+                                  <span className="text-xs font-bold w-5 text-center text-slate-700">{getCatalogQty(p.id, s.size)}</span>
+                                  <button onClick={() => updateCatalogQty(p.id, s.size, 1)} className="px-2 text-slate-500 hover:bg-slate-50 hover:text-emerald-500 font-bold cursor-pointer">+</button>
+                                </div>
+                                <button
+                                  onClick={() => {
+                                    const qty = getCatalogQty(p.id, s.size);
+                                    setItems(prev => {
+                                      const existingIndex = prev.findIndex(i => i.productId === p.id && i.size === s.size);
+                                      if (existingIndex > -1) {
+                                        return prev.map((item, idx) => idx === existingIndex ? { ...item, qty: item.qty + qty } : item);
+                                      } else {
+                                        return [...prev, { productId: p.id, name: p.name, size: s.size, qty: qty, price: s.price }];
+                                      }
+                                    });
+                                    setCatalogQuantities(prev => ({ ...prev, [`${p.id}-${s.size}`]: 1 }));
+                                    toast.success(`Added ${qty} × ${p.name} (${s.size})`);
+                                  }}
+                                  className="px-2.5 py-1 bg-slate-100 hover:bg-[#2C392A] hover:text-white text-slate-700 font-bold rounded-lg transition-colors cursor-pointer text-xs"
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="flex flex-wrap sm:flex-nowrap justify-between items-center gap-2 text-xs">
+                            <span className="font-medium text-slate-600 truncate max-w-[130px] sm:max-w-none">Standard - ₹{(p as any).price}</span>
+                            <div className="flex items-center gap-2 shrink-0 ml-auto">
+                              <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden h-7 bg-white">
+                                <button onClick={() => updateCatalogQty(p.id, 'Standard', -1)} className="px-2 text-slate-500 hover:bg-slate-50 hover:text-red-500 font-bold cursor-pointer">-</button>
+                                <span className="text-xs font-bold w-5 text-center text-slate-700">{getCatalogQty(p.id, 'Standard')}</span>
+                                <button onClick={() => updateCatalogQty(p.id, 'Standard', 1)} className="px-2 text-slate-500 hover:bg-slate-50 hover:text-emerald-500 font-bold cursor-pointer">+</button>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const qty = getCatalogQty(p.id, 'Standard');
+                                  setItems(prev => {
+                                    const existingIndex = prev.findIndex(i => i.productId === p.id && i.size === 'Standard');
+                                    if (existingIndex > -1) {
+                                      return prev.map((item, idx) => idx === existingIndex ? { ...item, qty: item.qty + qty } : item);
+                                    } else {
+                                      return [...prev, { productId: p.id, name: p.name, size: 'Standard', qty: qty, price: (p as any).price || 0 }];
+                                    }
+                                  });
+                                  setCatalogQuantities(prev => ({ ...prev, [`${p.id}-Standard`]: 1 }));
+                                  toast.success(`Added ${qty} × ${p.name}`);
+                                }}
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-[#2C392A] hover:text-white text-slate-700 font-bold rounded-lg transition-colors cursor-pointer text-xs"
+                              >
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 sm:p-6 border-t border-slate-100 bg-white flex justify-end">
+              <button 
+                onClick={() => setIsCatalogModalOpen(false)}
+                className="w-full sm:w-auto px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs sm:text-sm transition-colors cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
