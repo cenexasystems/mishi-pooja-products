@@ -84,16 +84,27 @@ export default function GlobalNav() {
         }`}
       >
         <div className="relative w-full px-2 sm:px-4 lg:px-6 flex items-center justify-between gap-1.5 sm:gap-3 min-w-0">
-          {/* Brand Logo - Pinned to the far left */}
+          {/* Brand Logo & Shop Name - Matching theme & design */}
           <Link href="/" className="flex items-center shrink min-w-0 group mr-auto">
-            <span className="inline-flex bg-white rounded-lg sm:rounded-xl px-1 sm:px-1.5 py-0.5 sm:py-1 ring-1 ring-emerald-900/5 shadow-sm transition-shadow duration-300 group-hover:shadow-md">
+            <span className="inline-flex items-center gap-2 sm:gap-3 bg-white rounded-lg sm:rounded-xl px-2 sm:px-3 py-1 sm:py-1.5 ring-1 ring-emerald-900/10 shadow-sm transition-all duration-300 group-hover:shadow-md">
               <img
                 src="/org_logo.jpeg"
-                alt="Mishi Pooja Products — Manufacture & Exporter"
+                alt="Mishi Pooja Products"
                 decoding="async"
                 fetchPriority="high"
-                className="h-8 xs:h-10 sm:h-14 md:h-16 w-auto max-w-[130px] xs:max-w-[200px] sm:max-w-[320px] md:max-w-[420px] object-contain transition-transform duration-300 group-hover:scale-[1.03] shrink-0"
+                className="h-8 xs:h-9 sm:h-11 md:h-12 w-auto object-contain transition-transform duration-300 group-hover:scale-105 shrink-0"
               />
+              <div className="flex flex-col justify-center min-w-0">
+                <span className="font-[family-name:var(--font-cinzel)] font-serif font-black tracking-wider text-[#916E2B] text-[11px] xs:text-xs sm:text-sm md:text-base leading-tight uppercase truncate">
+                  Mishi Pooja Products
+                </span>
+                <span className="text-[7.5px] xs:text-[8.5px] sm:text-[9.5px] md:text-[10px] font-bold text-[#A84825] tracking-widest uppercase leading-none mt-0.5">
+                  Manufacture &amp; Exporter
+                </span>
+                <span className="hidden lg:block text-[7.5px] text-[#3E4A3B] font-medium leading-none mt-0.5 tracking-tight">
+                  Specialised in Third Party Manufacturing
+                </span>
+              </div>
             </span>
           </Link>
 
@@ -223,12 +234,22 @@ export default function GlobalNav() {
               <div className="p-4 sm:p-6">
                 {/* Drawer Header */}
                 <div className="flex items-center justify-between mb-5 pb-3 border-b border-emerald-100 gap-3">
-                  <img
-                    src="/org_logo.jpeg"
-                    alt="Mishi Pooja Products — Manufacture & Exporter"
-                    decoding="async"
-                    className="h-10 sm:h-12 max-w-[220px] xs:max-w-[260px] w-auto object-contain shrink-0 mix-blend-multiply"
-                  />
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <img
+                      src="/org_logo.jpeg"
+                      alt="Mishi Pooja Products"
+                      decoding="async"
+                      className="h-10 sm:h-11 w-auto object-contain shrink-0 mix-blend-multiply"
+                    />
+                    <div className="flex flex-col justify-center min-w-0">
+                      <span className="font-[family-name:var(--font-cinzel)] font-serif font-black tracking-wider text-[#916E2B] text-xs sm:text-sm uppercase leading-tight">
+                        Mishi Pooja Products
+                      </span>
+                      <span className="text-[8.5px] sm:text-[9.5px] font-bold text-[#A84825] tracking-widest uppercase leading-none mt-0.5">
+                        Manufacture &amp; Exporter
+                      </span>
+                    </div>
+                  </div>
                   <button
                     onClick={() => setIsMenuOpen(false)}
                     className="p-1.5 sm:p-2 rounded-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 transition-colors shrink-0"

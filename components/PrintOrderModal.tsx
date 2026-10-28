@@ -17,7 +17,7 @@ const STORE = {
   name: "MISHI POOJA PRODUCTS",
   tagline: "Manufacture & Exporter",
   address: "Padasallai street, Lake Road, near to spicot, Chembarambakkam, Tamil Nadu 600123",
-  phone: "+91 80561 01114",
+  phone: "+91 95004 56288",
 };
 
 // Build CGST/SGST split from an order's stored totals

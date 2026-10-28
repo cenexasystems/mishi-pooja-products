@@ -22,12 +22,20 @@ export default function Footer() {
       <div className="max-w-7xl mx-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-8 sm:gap-12 mb-8 sm:mb-12 border-b border-white/10 pb-8 sm:pb-12">
         
         <div className="sm:col-span-2">
-          <div className="bg-white/95 p-3 rounded-2xl inline-block border border-white/20 shadow-md mb-4 sm:mb-6">
+          <div className="bg-white/95 px-3.5 py-2.5 rounded-2xl inline-flex items-center gap-3 border border-white/20 shadow-md mb-4 sm:mb-6">
             <img
               src="/org_logo.jpeg"
               alt="Mishi Pooja Products"
               className="h-10 sm:h-12 w-auto object-contain"
             />
+            <div className="flex flex-col">
+              <span className="font-[family-name:var(--font-cinzel)] font-serif font-black tracking-wider text-[#916E2B] text-sm sm:text-base uppercase leading-tight">
+                Mishi Pooja Products
+              </span>
+              <span className="text-[9px] sm:text-[10px] font-bold text-[#A84825] tracking-widest uppercase leading-none mt-0.5">
+                Manufacture &amp; Exporter
+              </span>
+            </div>
           </div>
           <p className="text-xs sm:text-sm text-white/70 leading-relaxed max-w-sm font-light">
             Bringing you the divine essence of pure, hand-crafted Siddha herbs and natural resins. Create a peaceful sanctuary in your everyday life.
@@ -56,9 +64,16 @@ export default function Footer() {
             Contact Us
           </h4>
           <ul className="space-y-2.5 text-xs sm:text-sm text-white/70 font-light">
-            <li className="font-bold text-white">+91 80561 01114</li>
-            <li className="font-bold text-white">+91 73395 18091</li>
-            <li>mishipoojaproducts@gmail.com</li>
+            <li className="font-bold text-white">
+              <a href="tel:+919500456288" className="hover:text-emerald-400 transition-colors">
+                +91 95004 56288
+              </a>
+            </li>
+            <li>
+              <a href="mailto:mishipoojaproducts@gmail.com" className="hover:text-emerald-400 transition-colors">
+                mishipoojaproducts@gmail.com
+              </a>
+            </li>
             <li className="leading-snug">Padasallai street, Lake Road, near to spicot, Chembarambakkam, Tamil Nadu 600123</li>
           </ul>
 

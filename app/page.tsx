@@ -997,8 +997,11 @@ export default function Home() {
               </div>
               <div>
                 <p className="text-xs font-extrabold text-[#2C392A]">Contact Phone</p>
-                <p className="text-xs text-[#5F6D59] font-bold">+91 80561 01114</p>
-                <p className="text-xs text-[#5F6D59] font-bold">+91 73395 18091</p>
+                <p className="text-xs text-[#5F6D59] font-bold">
+                  <a href="tel:+919500456288" className="hover:text-[#2C392A] transition-colors">
+                    +91 95004 56288
+                  </a>
+                </p>
               </div>
             </div>
           </div>
