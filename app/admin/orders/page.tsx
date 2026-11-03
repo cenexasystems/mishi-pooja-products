@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { Search, CheckCircle2, AlertCircle, Eye, X, ChevronDown, Printer, FileText, ArrowLeft, Trash2 } from 'lucide-react';
+import { Search, CheckCircle2, AlertCircle, Eye, X, ChevronDown, Printer, FileText, ArrowLeft, Trash2, Download } from 'lucide-react';
 import { useAdmin } from '../AdminContext';
 import { Order } from '@/lib/db';
 import PrintOrderModal from '@/components/PrintOrderModal';
@@ -247,6 +247,82 @@ export default function OrdersManagement() {
     });
   }, [orders, search, period, customFrom, customTo]);
 
+  // Export the currently filtered orders (respects period, custom dates and search) as a CSV
+  const handleExportOrders = () => {
+    if (filteredOrders.length === 0) {
+      showToast('No orders to export for the current filters', 'error');
+      return;
+    }
+
+    const escapeCell = (value: unknown) => {
+      let text = String(value ?? '');
+      // Prevent spreadsheet formula injection from customer-entered text
+      if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const headers = [
+      'Order ID', 'Date', 'Time', 'Customer Name', 'Phone', 'Email', 'Address', 'Source', 'Status',
+      'Items', 'Total Qty', 'Subtotal', 'Coupon Code', 'Coupon Discount', 'Manual Discount',
+      'GST', 'Delivery Charge', 'Total Amount', 'Cash Received', 'Change Returned',
+    ];
+
+    const rows = filteredOrders.map((o) => {
+      const created = o.createdAt ? new Date(o.createdAt) : null;
+      const taxable = Math.max(0, (o.subtotal || 0) - (o.couponDiscount || 0) - (o.manualDiscount || 0));
+      const gst = Math.max(0, Math.round((o.totalPrice || 0) - taxable - (o.deliveryCharge || 0)));
+      const itemsText = (o.items || [])
+        .map((i) => `${i.name}${i.size ? ` (${i.size})` : ''} x${i.quantity} @ ${i.price}`)
+        .join('; ');
+      const totalQty = (o.items || []).reduce((sum, i) => sum + (i.quantity || 0), 0);
+
+      return [
+        o.id,
+        created ? created.toLocaleDateString('en-GB') : '',
+        created ? created.toLocaleTimeString('en-IN') : '',
+        o.customerName,
+        o.customerPhone,
+        o.customerEmail || '',
+        (o.customerAddress || '').replace(/\s*\n\s*/g, ', '),
+        o.source,
+        o.status,
+        itemsText,
+        totalQty,
+        o.subtotal,
+        o.couponCode || '',
+        o.couponDiscount || 0,
+        o.manualDiscount || 0,
+        gst,
+        o.deliveryCharge || 0,
+        o.totalPrice,
+        o.cashReceived || 0,
+        o.changeReturned || 0,
+      ];
+    });
+
+    // Grand total row
+    const grandTotal = filteredOrders.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+    const totalRow = headers.map((h, idx) => (idx === 0 ? 'TOTAL' : h === 'Total Amount' ? grandTotal : ''));
+
+    const csv = [headers, ...rows, totalRow]
+      .map((row) => row.map(escapeCell).join(','))
+      .join('\r\n');
+
+    // BOM so Excel reads UTF-8 correctly
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `mishi-orders-${period.toLowerCase().replace(/\s+/g, '-')}-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`Exported ${filteredOrders.length} order${filteredOrders.length === 1 ? '' : 's'}`, 'success');
+  };
+
   return (
     <div className="space-y-6 relative max-w-full overflow-hidden">
       {/* Toast Notification */}
@@ -264,6 +340,15 @@ export default function OrdersManagement() {
           <h1 className="text-2xl font-black text-slate-900 tracking-tight">Billing Invoices (POS)</h1>
           <p className="text-sm font-medium text-slate-500 mt-1">Track and print POS store billing invoices (INV-)</p>
         </div>
+        <button
+          onClick={handleExportOrders}
+          disabled={loading || filteredOrders.length === 0}
+          className="inline-flex items-center gap-2 px-4 py-2.5 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm transition-colors cursor-pointer hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ backgroundColor: themeColor }}
+          title="Export the orders currently shown as a CSV (opens in Excel)"
+        >
+          <Download size={16} /> Export Details
+        </button>
       </div>
 
       {/* Filters & Search Row */}
