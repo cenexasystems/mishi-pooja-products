@@ -254,7 +254,14 @@ export default function OrdersManagement() {
       return;
     }
 
+    // Wrap a value so Excel keeps it as text (e.g. phone numbers) instead of converting it to a number
+    const asText = (value: unknown) => ({ excelText: String(value ?? '') });
+
     const escapeCell = (value: unknown) => {
+      if (value && typeof value === 'object' && 'excelText' in value) {
+        const t = (value as { excelText: string }).excelText;
+        return t ? '"=""' + t.replace(/"/g, '""""') + '"""' : '""';
+      }
       let text = String(value ?? '');
       // Prevent spreadsheet formula injection from customer-entered text
       if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
@@ -278,10 +285,10 @@ export default function OrdersManagement() {
 
       return [
         o.id,
-        created ? created.toLocaleDateString('en-GB') : '',
+        created ? `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}` : '',
         created ? created.toLocaleTimeString('en-IN') : '',
         o.customerName,
-        o.customerPhone,
+        asText(o.customerPhone),
         o.customerEmail || '',
         (o.customerAddress || '').replace(/\s*\n\s*/g, ', '),
         o.source,
